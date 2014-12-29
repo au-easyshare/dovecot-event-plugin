@@ -37,7 +37,7 @@
 
 extern const char *exec_event_plugin_dependencies[];
 
-const char *exec_event_plugin_version = DOVECOT_VERSION;
+// const char *exec_event_plugin_version = DOVECOT_VERSION;
 
 void exec_event_plugin_init(struct module *);
 void exec_event_plugin_deinit(void);

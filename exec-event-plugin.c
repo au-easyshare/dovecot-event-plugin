@@ -3,6 +3,8 @@
 #define	EXEC_EVENT_USER_CONTEXT(obj) \
 	MODULE_CONTEXT(obj, exec_event_user_module)
 
+#define DEFAULT_SOCKET_NAME	"/var/lib/dovecot/socket.sock"
+
 enum exec_event_event {
 	EXEC_EVENT_EVENT_SAVE		= 0x1,
 	EXEC_EVENT_EVENT_COPY		= 0x2
@@ -13,9 +15,7 @@ enum exec_event_event {
 struct exec_event_user {
 	union mail_user_module_context	module_ctx;
 	char				*username;
-	const char			*backend;
-	const char			*bin;
-	const char			*config;
+	const char			*socket_name;
 };
 
 struct exec_event_message {
@@ -26,9 +26,7 @@ struct exec_event_message {
 	uint32_t			uid;
 	char				*destination_folder;
 	char				*username;
-	const char			*backend;
-	char				*bin;
-	char				*config;
+	const char			*socket_name;
 };
 
 struct exec_event_mail_txn_context {
@@ -52,23 +50,13 @@ static void exec_event_mail_user_created(struct mail_user *user)
 	MODULE_CONTEXT_SET(user, exec_event_user_module, ocsuser);
 
 	ocsuser->username = p_strdup(user->pool, user->username);
-	str = mail_user_plugin_getenv(user, "exec_event_backend");
+	str = mail_user_plugin_getenv(user, "exec_event_socket_name");
 	if (!str) {
-		i_fatal("Missing exec_event_backend parameter in dovecot.conf");
+		ocsuser->socket_name = DEFAULT_SOCKET_NAME;
+	} else {
+		ocsuser->socket_name = str;
 	}
-	ocsuser->backend = str;
-
-	str = mail_user_plugin_getenv(user, "exec_event_newmail");
-	if (!str) {
-		i_fatal("Missing exec_event_newmail parameter in dovecot.conf");
-	}
-	ocsuser->bin = str;
-	
-	str = mail_user_plugin_getenv(user, "exec_event_config");
-	if (!str) {
-		i_fatal("Missing exec_event_config parameter in dovecot.conf");
-	}
-	ocsuser->config = str;
+	i_debug("socket_name = %s", ocsuser->socket_name);
 }
 
 static void exec_event_mail_save(void *txn, struct mail *mail)
@@ -90,10 +78,8 @@ static void exec_event_mail_copy(void *txn, struct mail *src, struct mail *dst)
 		msg->event = EXEC_EVENT_EVENT_COPY;
 		msg->ignore = FALSE;
 		msg->username = p_strdup(ctx->pool, mctx->username);
-		msg->backend = p_strdup(ctx->pool, mctx->backend);
 		msg->destination_folder = p_strdup(ctx->pool, mailbox_get_name(dst->box));
-		msg->bin = p_strdup(ctx->pool, mctx->bin);
-		msg->config = p_strdup(ctx->pool, mctx->config);
+		msg->socket_name = p_strdup(ctx->pool, mctx->socket_name);
 
 		/* FIXME: Quick hack of the night */
 		msg->username[0] = toupper(msg->username[0]);
@@ -125,7 +111,6 @@ static void exec_event_mail_transaction_commit(void *txn,
 	struct exec_event_message		*msg;
 	unsigned int				n = 0;
 	struct seq_range_iter			iter;
-	char					*command;
 
 	seq_range_array_iter_init(&iter, &changes->saved_uids);
 	for (msg = ctx->messages; msg != NULL; msg = msg->next) {
@@ -136,11 +121,11 @@ static void exec_event_mail_transaction_commit(void *txn,
 			i_debug("# uid = %d", msg->uid);
 			i_debug("# folder = %s", msg->destination_folder);
 			i_debug("# username = %s", msg->username);
-			i_debug("# backend = %s", msg->backend);
+			i_debug("# socket_name = %s", msg->socket_name);
 
 			/* FIXME: I'm ashamed but I'm tired */
-			command = p_strdup_printf(ctx->pool, "python %s --config %s --backend %s --user %s --folder %s --msgid %d", msg->bin, msg->config, msg->backend, msg->username, msg->destination_folder, msg->uid);
-			system(command);
+/*			command = p_strdup_printf(ctx->pool, "python %s --config %s --backend %s --user %s --folder %s --msgid %d", msg->bin, msg->config, msg->backend, msg->username, msg->destination_folder, msg->uid);
+			system(command); */
 		}
 	}
 	i_assert(!seq_range_array_iter_nth(&iter, n, &uid));
