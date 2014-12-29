@@ -1,51 +1,27 @@
 #include "exec-event-plugin.h"
 
-#define	OCSMANAGER_USER_CONTEXT(obj) \
-	MODULE_CONTEXT(obj, ocsmanager_user_module)
+#define	EXEC_EVENT_USER_CONTEXT(obj) \
+	MODULE_CONTEXT(obj, exec_event_user_module)
 
-enum ocsmanager_field {
-	OCSMANAGER_FIELD_UID		= 0x1,
-	OCSMANAGER_FIELD_BOX		= 0x2,
-	OCSMANAGER_FIELD_MSGID		= 0x4,
-	OCSMANAGER_FIELD_PSIZE		= 0x8,
-	OCSMANAGER_FIELD_VSIZE		= 0x10,
-	OCSMANAGER_FIELD_FLAGS		= 0x20,
-	OCSMANAGER_FIELD_FROM		= 0x40,
-	OCSMANAGER_FIELD_SUBJECT	= 0x80
+enum exec_event_event {
+	EXEC_EVENT_EVENT_SAVE		= 0x1,
+	EXEC_EVENT_EVENT_COPY		= 0x2
 };
 
-#define	OCSMANAGER_DEFAULT_FIELDS \
-	(OCSMANAGER_FIELD_UID | OCSMANAGER_FIELD_BOX | \
-	 OCSMANAGER_FIELD_MSGID | OCSMANAGER_FIELD_PSIZE)
+#define	EXEC_EVENT_DEFAULT_EVENTS	(EXEC_EVENT_EVENT_SAVE)
 
-enum ocsmanager_event {
-	OCSMANAGER_EVENT_DELETE		= 0x1,
-	OCSMANAGER_EVENT_UNDELETE	= 0x2,
-	OCSMANAGER_EVENT_EXPUNGE	= 0x4,
-	OCSMANAGER_EVENT_SAVE		= 0x8,
-	OCSMANAGER_EVENT_COPY		= 0x10,
-	OCSMANAGER_EVENT_MAILBOX_CREATE	= 0x20,
-	OCSMANAGER_EVENT_MAILBOX_DELETE	= 0x40,
-	OCSMANAGER_EVENT_MAILBOX_RENAME	= 0x80,
-	OCSMANAGER_EVENT_FLAG_CHANGE	= 0x100
-};
-
-#define	OCSMANAGER_DEFAULT_EVENTS	(OCSMANAGER_EVENT_SAVE)
-
-struct ocsmanager_user {
+struct exec_event_user {
 	union mail_user_module_context	module_ctx;
-	enum ocsmanager_field		fields;
-	enum ocsmanager_event		events;
 	char				*username;
 	const char			*backend;
 	const char			*bin;
 	const char			*config;
 };
 
-struct ocsmanager_message {
-	struct ocsmanager_message	*prev;
-	struct ocsmanager_message	*next;
-	enum ocsmanager_event		event;
+struct exec_event_message {
+	struct exec_event_message	*prev;
+	struct exec_event_message	*next;
+	enum exec_event_event		event;
 	bool				ignore;
 	uint32_t			uid;
 	char				*destination_folder;
@@ -55,65 +31,63 @@ struct ocsmanager_message {
 	char				*config;
 };
 
-struct ocsmanager_mail_txn_context {
+struct exec_event_mail_txn_context {
 	pool_t				pool;
-	struct ocsmanager_message	*messages;
-	struct ocsmanager_message	*messages_tail;
+	struct exec_event_message	*messages;
+	struct exec_event_message	*messages_tail;
 };
 
-static MODULE_CONTEXT_DEFINE_INIT(ocsmanager_user_module,
+static MODULE_CONTEXT_DEFINE_INIT(exec_event_user_module,
 				  &mail_user_module_register);
 
-static void ocsmanager_mail_user_created(struct mail_user *user)
+static void exec_event_mail_user_created(struct mail_user *user)
 {
-	struct ocsmanager_user	*ocsuser;
+	struct exec_event_user	*ocsuser;
 	const char		*str;
 
-	i_debug("ocsmanager_mail_user_created");
+	i_debug("exec_event_mail_user_created");
 	i_debug("username = %s", user->username);
 
-	ocsuser = p_new(user->pool, struct ocsmanager_user, 1);
-	MODULE_CONTEXT_SET(user, ocsmanager_user_module, ocsuser);
+	ocsuser = p_new(user->pool, struct exec_event_user, 1);
+	MODULE_CONTEXT_SET(user, exec_event_user_module, ocsuser);
 
-	ocsuser->fields = OCSMANAGER_DEFAULT_FIELDS;
-	ocsuser->events = OCSMANAGER_DEFAULT_EVENTS;
 	ocsuser->username = p_strdup(user->pool, user->username);
-	str = mail_user_plugin_getenv(user, "ocsmanager_backend");
+	str = mail_user_plugin_getenv(user, "exec_event_backend");
 	if (!str) {
-		i_fatal("Missing ocsmanager_backend parameter in dovecot.conf");
+		i_fatal("Missing exec_event_backend parameter in dovecot.conf");
 	}
 	ocsuser->backend = str;
 
-	str = mail_user_plugin_getenv(user, "ocsmanager_newmail");
+	str = mail_user_plugin_getenv(user, "exec_event_newmail");
 	if (!str) {
-		i_fatal("Missing ocsmanager_newmail parameter in dovecot.conf");
+		i_fatal("Missing exec_event_newmail parameter in dovecot.conf");
 	}
 	ocsuser->bin = str;
 	
-	str = mail_user_plugin_getenv(user, "ocsmanager_config");
+	str = mail_user_plugin_getenv(user, "exec_event_config");
 	if (!str) {
-		i_fatal("Missing ocsmanager_config parameter in dovecot.conf");
+		i_fatal("Missing exec_event_config parameter in dovecot.conf");
 	}
 	ocsuser->config = str;
 }
 
-static void ocsmanager_mail_save(void *txn, struct mail *mail)
+static void exec_event_mail_save(void *txn, struct mail *mail)
 {
-	i_debug("ocsmanager_mail_save");
+	i_debug("exec_event_mail_save");
 	i_debug("message UID = %d\n", mail->uid);
 }
 
-static void ocsmanager_mail_copy(void *txn, struct mail *src, struct mail *dst)
+static void exec_event_mail_copy(void *txn, struct mail *src, struct mail *dst)
 {
-	struct ocsmanager_mail_txn_context	*ctx = (struct ocsmanager_mail_txn_context *) txn;
-	struct ocsmanager_user			*mctx = OCSMANAGER_USER_CONTEXT(dst->box->storage->user);
-	struct ocsmanager_message		*msg;
+	struct exec_event_mail_txn_context	*ctx = (struct exec_event_mail_txn_context *) txn;
+	struct exec_event_user			*mctx = EXEC_EVENT_USER_CONTEXT(dst->box->storage->user);
+	struct exec_event_message		*msg;
 	int					i;
 
 	if (strcmp(src->box->storage->name, "raw") == 0) {
 		/* special case: lda/lmtp is saving a mail */
-		msg = p_new(ctx->pool, struct ocsmanager_message, 1);
-		msg->event = OCSMANAGER_EVENT_COPY;
+		msg = p_new(ctx->pool, struct exec_event_message, 1);
+		msg->event = EXEC_EVENT_EVENT_COPY;
 		msg->ignore = FALSE;
 		msg->username = p_strdup(ctx->pool, mctx->username);
 		msg->backend = p_strdup(ctx->pool, mctx->backend);
@@ -131,31 +105,31 @@ static void ocsmanager_mail_copy(void *txn, struct mail *src, struct mail *dst)
 	}
 }
 
-static void *ocsmanager_mail_transaction_begin(struct mailbox_transaction_context *t ATTR_UNUSED)
+static void *exec_event_mail_transaction_begin(struct mailbox_transaction_context *t ATTR_UNUSED)
 {
 	pool_t					pool;
-	struct ocsmanager_mail_txn_context	*ctx;
+	struct exec_event_mail_txn_context	*ctx;
 
-	pool = pool_alloconly_create("ocsmanager", 2048);
-	ctx = p_new(pool, struct ocsmanager_mail_txn_context, 1);
+	pool = pool_alloconly_create("exec_event", 2048);
+	ctx = p_new(pool, struct exec_event_mail_txn_context, 1);
 	ctx->pool = pool;
 
 	return ctx;
 }
 
-static void ocsmanager_mail_transaction_commit(void *txn, 
+static void exec_event_mail_transaction_commit(void *txn, 
 					       struct mail_transaction_commit_changes *changes)
 {
-	struct ocsmanager_mail_txn_context	*ctx = (struct ocsmanager_mail_txn_context *)txn;
+	struct exec_event_mail_txn_context	*ctx = (struct exec_event_mail_txn_context *)txn;
 	uint32_t				uid;
-	struct ocsmanager_message		*msg;
+	struct exec_event_message		*msg;
 	unsigned int				n = 0;
 	struct seq_range_iter			iter;
 	char					*command;
 
 	seq_range_array_iter_init(&iter, &changes->saved_uids);
 	for (msg = ctx->messages; msg != NULL; msg = msg->next) {
-		if (msg->event == OCSMANAGER_EVENT_COPY) {
+		if (msg->event == EXEC_EVENT_EVENT_COPY) {
 			if (!seq_range_array_iter_nth(&iter, n++, &uid)) uid = 0;
 			msg->uid = uid;
 			
@@ -174,39 +148,39 @@ static void ocsmanager_mail_transaction_commit(void *txn,
 	pool_unref(&ctx->pool);
 }
 
-static void ocsmanager_mail_transaction_rollback(void *txn)
+static void exec_event_mail_transaction_rollback(void *txn)
 {
-	struct ocsmanager_mail_txn_context	*ctx = (struct ocsmanager_mail_txn_context *) txn;
+	struct exec_event_mail_txn_context	*ctx = (struct exec_event_mail_txn_context *) txn;
 
 	pool_unref(&ctx->pool);
 }
 
-static const struct notify_vfuncs ocsmanager_vfuncs = {
-	.mail_transaction_begin = ocsmanager_mail_transaction_begin,
-	.mail_save = ocsmanager_mail_save,
-	.mail_copy = ocsmanager_mail_copy,
-	.mail_transaction_commit = ocsmanager_mail_transaction_commit,
-	.mail_transaction_rollback = ocsmanager_mail_transaction_rollback,
+static const struct notify_vfuncs exec_event_vfuncs = {
+	.mail_transaction_begin = exec_event_mail_transaction_begin,
+	.mail_save = exec_event_mail_save,
+	.mail_copy = exec_event_mail_copy,
+	.mail_transaction_commit = exec_event_mail_transaction_commit,
+	.mail_transaction_rollback = exec_event_mail_transaction_rollback,
 };
 
-static struct notify_context *ocsmanager_ctx;
+static struct notify_context *exec_event_ctx;
 
-static struct mail_storage_hooks ocsmanager_mail_storage_hooks = {
-	.mail_user_created = ocsmanager_mail_user_created
+static struct mail_storage_hooks exec_event_mail_storage_hooks = {
+	.mail_user_created = exec_event_mail_user_created
 };
 
-void ocsmanager_plugin_init(struct module *module)
+void exec_event_plugin_init(struct module *module)
 {
 	i_debug("oscmanager_plugin_init");
-	ocsmanager_ctx = notify_register(&ocsmanager_vfuncs);
-	mail_storage_hooks_add(module, &ocsmanager_mail_storage_hooks);
+	exec_event_ctx = notify_register(&exec_event_vfuncs);
+	mail_storage_hooks_add(module, &exec_event_mail_storage_hooks);
 }
 
-void ocsmanager_plugin_deinit(void)
+void exec_event_plugin_deinit(void)
 {  
 	i_debug("oscmanager_plugin_deinit");
-	mail_storage_hooks_remove(&ocsmanager_mail_storage_hooks);
-	notify_unregister(ocsmanager_ctx);
+	mail_storage_hooks_remove(&exec_event_mail_storage_hooks);
+	notify_unregister(exec_event_ctx);
 }
 
-const char *ocsmanager_plugin_dependencies[] = { "notify", NULL };
+const char *exec_event_plugin_dependencies[] = { "notify", NULL };

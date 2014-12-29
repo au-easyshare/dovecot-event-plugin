@@ -19,8 +19,8 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __OCSMANAGER_PLUGIN_H
-#define	__OCSMANAGER_PLUGIN_H
+#ifndef __EXEC_EVENT_PLUGIN_H
+#define	__EXEC_EVENT_PLUGIN_H
 
 #include "lib.h"
 #include "llist.h"
@@ -35,11 +35,11 @@
 #include <ctype.h>
 #include <stdlib.h>
 
-extern const char *ocsmanager_plugin_dependencies[];
+extern const char *exec_event_plugin_dependencies[];
 
-const char *ocsmanager_plugin_version = DOVECOT_VERSION;
+const char *exec_event_plugin_version = DOVECOT_VERSION;
 
-void ocsmanager_plugin_init(struct module *);
-void ocsmanager_plugin_deinit(void);
+void exec_event_plugin_init(struct module *);
+void exec_event_plugin_deinit(void);
 
-#endif /* __OCSMANAGER_PLUGIN_H */
+#endif /* __EXEC_EVENT_PLUGIN_H */
