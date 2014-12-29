@@ -1,4 +1,5 @@
 #include "exec-event-plugin.h"
+#include <stdio.h>
 
 #define	EXEC_EVENT_USER_CONTEXT(obj) \
 	MODULE_CONTEXT(obj, exec_event_user_module)
@@ -40,23 +41,23 @@ static MODULE_CONTEXT_DEFINE_INIT(exec_event_user_module,
 
 static void exec_event_mail_user_created(struct mail_user *user)
 {
-	struct exec_event_user	*ocsuser;
+	struct exec_event_user	*event_user;
 	const char		*str;
 
 	i_debug("exec_event_mail_user_created");
 	i_debug("username = %s", user->username);
 
-	ocsuser = p_new(user->pool, struct exec_event_user, 1);
-	MODULE_CONTEXT_SET(user, exec_event_user_module, ocsuser);
+	event_user = p_new(user->pool, struct exec_event_user, 1);
+	MODULE_CONTEXT_SET(user, exec_event_user_module, event_user);
 
-	ocsuser->username = p_strdup(user->pool, user->username);
+	event_user->username = p_strdup(user->pool, user->username);
 	str = mail_user_plugin_getenv(user, "exec_event_socket_name");
 	if (!str) {
-		ocsuser->socket_name = DEFAULT_SOCKET_NAME;
+		event_user->socket_name = DEFAULT_SOCKET_NAME;
 	} else {
-		ocsuser->socket_name = str;
+		event_user->socket_name = str;
 	}
-	i_debug("socket_name = %s", ocsuser->socket_name);
+	i_debug("socket_name = %s", event_user->socket_name);
 }
 
 static void exec_event_mail_save(void *txn, struct mail *mail)
@@ -103,6 +104,49 @@ static void *exec_event_mail_transaction_begin(struct mailbox_transaction_contex
 	return ctx;
 }
 
+
+
+static int send_data(const char *socket_path, const char *username, uint32_t uid, const char *destination_folder)
+{
+
+	char	out_buf[1024];
+	sprintf(out_buf, "{'username': '%s', 'mailbox': '%s'}\n", username, destination_folder);
+	i_debug("Write '%s'", out_buf);
+	int ret = -1;
+
+	int fd = net_connect_unix(socket_path);
+	if (fd == -1) {
+		i_error("net_connect_unix(%s) failed: %m", socket_path);
+		return -1;
+	}
+
+	net_set_nonblock(fd, FALSE);
+
+	alarm(1);
+	{
+		if (net_transmit(fd, out_buf, strlen(out_buf)) < 0) {
+			i_error("write(%s) failed: %m", socket_path);
+			ret = -1;
+		} else {
+			i_debug("going on to read(%s)", socket_path);
+			char res[1024];
+			ret = net_receive(fd, res, sizeof(res)-1);
+			if (ret < 0) {
+				i_error("read(%s) failed: %m", socket_path);
+			} else {
+				res[ret] = '\0';
+				if (strncmp(res, "OK ", 3) == 0) {
+					ret = 0;
+				}
+			}
+		}
+	}
+	alarm(0);
+	net_disconnect(fd);
+	return ret;
+}
+
+
 static void exec_event_mail_transaction_commit(void *txn, 
 					       struct mail_transaction_commit_changes *changes)
 {
@@ -118,14 +162,12 @@ static void exec_event_mail_transaction_commit(void *txn,
 			if (!seq_range_array_iter_nth(&iter, n++, &uid)) uid = 0;
 			msg->uid = uid;
 			
-			i_debug("# uid = %d", msg->uid);
-			i_debug("# folder = %s", msg->destination_folder);
-			i_debug("# username = %s", msg->username);
-			i_debug("# socket_name = %s", msg->socket_name);
+			// i_debug("# uid = %d", msg->uid);
+			//i_debug("# folder = %s", msg->destination_folder);
+			//i_debug("# username = %s", msg->username);
+			//i_debug("# socket_name = %s", msg->socket_name);
 
-			/* FIXME: I'm ashamed but I'm tired */
-/*			command = p_strdup_printf(ctx->pool, "python %s --config %s --backend %s --user %s --folder %s --msgid %d", msg->bin, msg->config, msg->backend, msg->username, msg->destination_folder, msg->uid);
-			system(command); */
+			send_data(msg->socket_name, msg->username,  msg->uid, msg->destination_folder);
 		}
 	}
 	i_assert(!seq_range_array_iter_nth(&iter, n, &uid));
@@ -156,14 +198,14 @@ static struct mail_storage_hooks exec_event_mail_storage_hooks = {
 
 void exec_event_plugin_init(struct module *module)
 {
-	i_debug("oscmanager_plugin_init");
+	i_debug("exec_event_plugin_init");
 	exec_event_ctx = notify_register(&exec_event_vfuncs);
 	mail_storage_hooks_add(module, &exec_event_mail_storage_hooks);
 }
 
 void exec_event_plugin_deinit(void)
 {  
-	i_debug("oscmanager_plugin_deinit");
+	i_debug("exec_event_plugin_deinit");
 	mail_storage_hooks_remove(&exec_event_mail_storage_hooks);
 	notify_unregister(exec_event_ctx);
 }

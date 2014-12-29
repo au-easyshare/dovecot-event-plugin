@@ -30,6 +30,7 @@
 #include "mail-user.h"
 #include "mail-storage-private.h"
 #include "mailbox-list-private.h"
+#include "net.h"
 #include "notify-plugin.h"
 
 #include <ctype.h>
