@@ -16,7 +16,7 @@ enum exec_event_event {
 struct exec_event_user {
 	union mail_user_module_context	module_ctx;
 	char				*username;
-	const char			*socket_name;
+	const char			**sockets;
 };
 
 struct exec_event_message {
@@ -27,7 +27,7 @@ struct exec_event_message {
 	uint32_t			uid;
 	char				*destination_folder;
 	char				*username;
-	const char			*socket_name;
+	const char			**sockets;
 };
 
 struct exec_event_mail_txn_context {
@@ -38,6 +38,28 @@ struct exec_event_mail_txn_context {
 
 static MODULE_CONTEXT_DEFINE_INIT(exec_event_user_module,
 				  &mail_user_module_register);
+
+
+#define MAX_SOCKETS	10
+
+static const char **parse_sockets(pool_t pool, const char *str)
+{
+        const char *const *tmp;
+	int	socket_num = 0;
+	const char **sockets = (const char **)p_new(pool, char *, MAX_SOCKETS);
+	i_debug("parsing '%s'", str);
+        for (tmp = t_strsplit_spaces(str, ", "); *tmp != NULL; tmp++) {
+		if (socket_num > MAX_SOCKETS) {
+			i_error("too many sockets to write to");
+			break;
+		}
+                sockets[socket_num++] = (const char *)p_strdup(pool, *tmp);
+        }
+
+	sockets[socket_num] = (char *)0;
+        return sockets;
+}
+
 
 static void exec_event_mail_user_created(struct mail_user *user)
 {
@@ -51,13 +73,18 @@ static void exec_event_mail_user_created(struct mail_user *user)
 	MODULE_CONTEXT_SET(user, exec_event_user_module, event_user);
 
 	event_user->username = p_strdup(user->pool, user->username);
-	str = mail_user_plugin_getenv(user, "exec_event_socket_name");
+	str = mail_user_plugin_getenv(user, "exec_event_socket_names");
 	if (!str) {
-		event_user->socket_name = DEFAULT_SOCKET_NAME;
+		i_error("Sockets should have at least one entry exec_event_socket_names");
+		event_user->sockets = (const char **)0;
 	} else {
-		event_user->socket_name = str;
+		event_user->sockets = parse_sockets(user->pool, str);
 	}
-	i_debug("socket_name = %s", event_user->socket_name);
+	if (event_user->sockets != (const char **)0) {
+		for (const char **tmp = event_user->sockets; *tmp != (const char *)0; tmp++) {
+			i_debug("socket to write to '%s'", *tmp);
+		}
+	}
 }
 
 static void exec_event_mail_save(void *txn, struct mail *mail)
@@ -71,23 +98,15 @@ static void exec_event_mail_copy(void *txn, struct mail *src, struct mail *dst)
 	struct exec_event_mail_txn_context	*ctx = (struct exec_event_mail_txn_context *) txn;
 	struct exec_event_user			*mctx = EXEC_EVENT_USER_CONTEXT(dst->box->storage->user);
 	struct exec_event_message		*msg;
-	int					i;
 
 	if (strcmp(src->box->storage->name, "raw") == 0) {
-		/* special case: lda/lmtp is saving a mail */
 		msg = p_new(ctx->pool, struct exec_event_message, 1);
 		msg->event = EXEC_EVENT_EVENT_COPY;
 		msg->ignore = FALSE;
 		msg->username = p_strdup(ctx->pool, mctx->username);
 		msg->destination_folder = p_strdup(ctx->pool, mailbox_get_name(dst->box));
-		msg->socket_name = p_strdup(ctx->pool, mctx->socket_name);
-
-		/* FIXME: Quick hack of the night */
-		msg->username[0] = toupper(msg->username[0]);
-		for (i = 0; i < strlen(msg->destination_folder); i++) {
-			msg->destination_folder[i] = tolower(msg->destination_folder[i]);
-		}
-
+		// msg->socket_name = p_strdup(ctx->pool, mctx->socket_name);
+		msg->sockets = mctx->sockets;
 		DLLIST2_APPEND(&ctx->messages, &ctx->messages_tail, msg);		
 	}
 }
@@ -106,43 +125,48 @@ static void *exec_event_mail_transaction_begin(struct mailbox_transaction_contex
 
 
 
-static int send_data(const char *socket_path, const char *username, uint32_t uid, const char *destination_folder)
+static int send_data(const char **sockets, const char *username, uint32_t uid, const char *destination_folder)
 {
-
 	char	out_buf[1024];
-	sprintf(out_buf, "{'username': '%s', 'mailbox': '%s'}\n", username, destination_folder);
+	sprintf(out_buf, "{\"username\": \"%s\", \"mailbox\": \"%s\"}\n", username, destination_folder);
 	i_debug("Write '%s'", out_buf);
 	int ret = -1;
 
-	int fd = net_connect_unix(socket_path);
-	if (fd == -1) {
-		i_error("net_connect_unix(%s) failed: %m", socket_path);
+	if (sockets == (const char **)0) {
+		i_error("No sockets configured to send");
 		return -1;
 	}
-
-	net_set_nonblock(fd, FALSE);
-
-	alarm(1);
-	{
-		if (net_transmit(fd, out_buf, strlen(out_buf)) < 0) {
-			i_error("write(%s) failed: %m", socket_path);
-			ret = -1;
-		} else {
-			i_debug("going on to read(%s)", socket_path);
-			char res[1024];
-			ret = net_receive(fd, res, sizeof(res)-1);
-			if (ret < 0) {
-				i_error("read(%s) failed: %m", socket_path);
+	for (; *sockets != (const char *)0; sockets++) {
+		int fd = net_connect_unix(*sockets);
+		if (fd == -1) {
+			i_error("net_connect_unix(%s) failed: %m", *sockets);
+			continue;
+		}
+		net_set_nonblock(fd, FALSE);
+		alarm(1);
+		{
+			if (net_transmit(fd, out_buf, strlen(out_buf)) < 0) {
+				i_error("write(%s) failed: %m", *sockets);
+				ret = -1;
 			} else {
-				res[ret] = '\0';
-				if (strncmp(res, "OK ", 3) == 0) {
-					ret = 0;
+				char res[1024];
+				ret = net_receive(fd, res, sizeof(res)-1);
+				if (ret < 0) {
+					i_debug("read(%s) failed: %m", *sockets);
+				} else {
+					res[ret] = '\0';
+					if (strncmp(res, "OK", 2) == 0) {
+						ret = 0;
+						i_debug("GOT OK");
+					} else {
+						i_debug("didn't get OK");
+					}
 				}
 			}
 		}
+		alarm(0);
+		net_disconnect(fd);
 	}
-	alarm(0);
-	net_disconnect(fd);
 	return ret;
 }
 
@@ -167,7 +191,7 @@ static void exec_event_mail_transaction_commit(void *txn,
 			//i_debug("# username = %s", msg->username);
 			//i_debug("# socket_name = %s", msg->socket_name);
 
-			send_data(msg->socket_name, msg->username,  msg->uid, msg->destination_folder);
+			send_data(msg->sockets, msg->username,  msg->uid, msg->destination_folder);
 		}
 	}
 	i_assert(!seq_range_array_iter_nth(&iter, n, &uid));
